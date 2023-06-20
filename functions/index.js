@@ -156,6 +156,7 @@ export const getCoworkings = onRequest(async (req, res) => {
     }
   }
 
+  res.set('Access-Control-Allow-Origin', '*');
   res.json({ coworkings });
 });
 
