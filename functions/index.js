@@ -1,4 +1,5 @@
 import { onRequest } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import * as cron from 'node-cron';
@@ -21,38 +22,41 @@ const googleMapsClient = createClient({
 
 initializeApp();
 
-cron.schedule('0 0 */2 * * *', async () => {
-  const bookingsSnap = await getFirestore()
-    .collection('bookings')
-    .where('status', '==', 'active')
-    .get();
+export const bookingsStatusUpdateScheduler = onSchedule(
+  '0 * * * *',
+  async () => {
+    const bookingsSnap = await getFirestore()
+      .collection('bookings')
+      .where('status', '==', 'active')
+      .get();
 
-  const promises = [];
+    const promises = [];
 
-  bookingsSnap.forEach((doc) => {
-    const data = doc.data();
-    const bookingDate = new Date(data.date);
-    const bookingEndTime = new Date(
-      bookingDate.getFullYear(),
-      bookingDate.getMonth(),
-      bookingDate.getDate(),
-      data.timeSlot.endTime.hour,
-      data.timeSlot.endTime.minute
-    );
-
-    if (bookingEndTime < new Date()) {
-      promises.push(
-        getFirestore()
-          .collection('bookings')
-          .doc(doc.id)
-          .update({ status: 'completed' })
+    bookingsSnap.forEach((doc) => {
+      const data = doc.data();
+      const bookingDate = new Date(data.date);
+      const bookingEndTime = new Date(
+        bookingDate.getFullYear(),
+        bookingDate.getMonth(),
+        bookingDate.getDate(),
+        data.timeSlot.endTime.hour,
+        data.timeSlot.endTime.minute
       );
-    }
-  });
 
-  const reslts = await Promise.all(promises);
-  console.log(reslts);
-});
+      if (bookingEndTime < new Date()) {
+        promises.push(
+          getFirestore()
+            .collection('bookings')
+            .doc(doc.id)
+            .update({ status: 'completed' })
+        );
+      }
+    });
+
+    const reslts = await Promise.all(promises);
+    console.log(reslts);
+  }
+);
 
 export const updateBookings = onRequest(async (req, res) => {
   try {
@@ -103,7 +107,7 @@ export const getCoworkings = onRequest(async (req, res) => {
   //   userData.userSkills = newSkills;
   // }
 
-  let coworkingsSnap = await db.collection('coworkings').get();
+  let coworkingsSnap = await db.collection('coworkings').limit(7).get();
 
   let coworkings = await Promise.all(
     coworkingsSnap.docs.map(async (doc, index) => {
@@ -119,9 +123,14 @@ export const getCoworkings = onRequest(async (req, res) => {
   );
 
   if (newSkills) {
-    const skillsAnalysis = await getCoworkingsStatSkillsTopicAnalysis(coworkings, newSkills);
+    const skillsAnalysis = await getCoworkingsStatSkillsTopicAnalysis(
+      coworkings,
+      newSkills
+    );
     coworkings = coworkings.map((coworking) => {
-      const analysis = skillsAnalysis.find(analysis => analysis.id === coworking.id);
+      const analysis = skillsAnalysis.find(
+        (analysis) => analysis.id === coworking.id
+      );
       if (analysis) coworking.skillAnalysisTopic = analysis.topic;
       return coworking;
     });
@@ -137,14 +146,18 @@ export const getCoworkings = onRequest(async (req, res) => {
 
   // Sort the coworkings by distance and skillAnalysisTopic
   coworkings.sort((a, b) => {
-    if (a.skillAnalysisTopic && !b.skillAnalysisTopic) return -1;
-    if (!a.skillAnalysisTopic && b.skillAnalysisTopic) return 1;
+    // if (a.skillAnalysisTopic && !b.skillAnalysisTopic) return -1;
+    // if (!a.skillAnalysisTopic && b.skillAnalysisTopic) return 1;
 
     return distances[a.idIndex] - distances[b.idIndex];
   });
 
   if (targetPrice) {
-    coworkings.sort((a, b) => Math.abs(a.averagePrice - targetPrice) - Math.abs(b.averagePrice - targetPrice));
+    coworkings.sort(
+      (a, b) =>
+        Math.abs(a.averagePrice - targetPrice) -
+        Math.abs(b.averagePrice - targetPrice)
+    );
   }
 
   if (page) {
@@ -210,7 +223,7 @@ const getAveragePrice = async (db, coworkingId) => {
   console.log('averagePrice', averagePrice, coworkingId);
 
   return averagePrice;
-}
+};
 
 const getUsersSkillsStat = async (db, coworkingId) => {
   const bookingSnap = await db
@@ -238,7 +251,7 @@ const getUsersSkillsStat = async (db, coworkingId) => {
   }
 
   return skillsStat;
-}
+};
 
 const getPossibleSkills = () => {
   const numSkills = Math.floor(Math.random() * 7) + 1;
@@ -249,17 +262,21 @@ const getPossibleSkills = () => {
     result[possibleSkills[skillIndex]] = skillPower;
   }
   return result;
-}
+};
 
 const getCoworkingsStatSkillsTopicAnalysis = async (coworkings, skills) => {
-  const coworkingsSkillsStatistic = coworkings.map(coworking => {
+  const coworkingsSkillsStatistic = coworkings.map((coworking) => {
     return { id: coworking.id, statistics: coworking.skillsStatistic };
   });
 
-  console.log(skills.join(", "));
+  console.log(skills.join(', '));
   console.log(JSON.stringify(coworkingsSkillsStatistic));
 
-  const prompt = `Given a user with the skills [${skills.join(", ")}], and coworking space skill statistics ${JSON.stringify(coworkingsSkillsStatistic)}, select between one to three coworking spaces whose skills best match those of the user. Each selected coworking space must be unique. For each selected coworking space, also identify the skill topic that most closely matches the user's skills. Your returned text should be in one of the following formats : [{"id": "fullId1", "topic": "Matched Topic"}] or [{"id": "fullId1", "topic": "Matched Topic"}, {"id": "fullId2", "topic": "Matched Topic"}] or [{"id": "fullId1", "topic": "Matched Topic"}, {"id": "fullId2", "topic": "Matched Topic"}, {"id": "fullId3", "topic": "Matched Topic"}].`;
+  const prompt = `Given a user with the skills [${skills.join(
+    ', '
+  )}], and coworking space skill statistics ${JSON.stringify(
+    coworkingsSkillsStatistic
+  )}, select one or two coworking spaces whose skills best match those of the user. Each selected coworking space must be unique. For each selected coworking space, also identify the skill topic that most closely matches the user's skills. Your returned text should be in one of the following formats : [{"id": "fullId1", "topic": "Matched Topic"}] or [{"id": "fullId1", "topic": "Matched Topic"}, {"id": "fullId2", "topic": "Matched Topic"}] or [{"id": "fullId1", "topic": "Matched Topic"}, {"id": "fullId2", "topic": "Matched Topic"}, {"id": "fullId3", "topic": "Matched Topic"}].`;
 
   console.log(prompt);
 
@@ -267,7 +284,7 @@ const getCoworkingsStatSkillsTopicAnalysis = async (coworkings, skills) => {
     model: 'text-davinci-003',
     prompt: prompt,
     temperature: 0.2,
-    max_tokens: 200
+    max_tokens: 200,
   });
 
   const match = response.data.choices[0].text.trim().match(/\[.*\]/);
@@ -275,4 +292,4 @@ const getCoworkingsStatSkillsTopicAnalysis = async (coworkings, skills) => {
   console.log('skillsAnalysis', skillsAnalysis);
 
   return skillsAnalysis;
-}
+};
